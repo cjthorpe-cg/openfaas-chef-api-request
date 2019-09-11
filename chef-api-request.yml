@@ -1,0 +1,8 @@
+provider:
+  name: faas
+  gateway: http://127.0.0.1:8080
+functions:
+  chef-api-request:
+    lang: dockerfile
+    handler: ./chef-api-request
+    image: chef-api-request:1.0

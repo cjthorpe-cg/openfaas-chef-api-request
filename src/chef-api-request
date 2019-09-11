@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+
+# Adapted from a script provided in the official Chef documentation:
+# https://docs.chef.io/auth.html#curl
+
+usage() {
+  printf "\nchef-api-request: Queries a Chef organisation using a supplied role name and returns the hosts to which the role is assigned."
+  printf "\n\nUsage [via curl]: curl -s -X POST http://[<OpenFaaS Host>]:8080/function/chef-api-request -d \"[<arguments>]\""
+  printf "\n\nArguments:"
+  printf "\nchef role name     The role name to query for within Chef, e.g. my_app_pipeline"
+  printf "\nenvironment        The chef environment to be searched, e.g. DEV_STAGING for testing, SITE_A and SITE_B for production."
+  printf "\nchef organization  The chef organization to be searched, e.g. chef_dev or chef_prod."
+  printf "\n\nExample:"
+  printf "\n  curl -s -X POST http://127.0.0.1:8080/function/chef-api-request -d \"\"my_app_pipeline\" \"DEV_STAGING\" \"chef_dev\"\""
+  exit 0
+}
+
+_chomp () {
+  # helper function to remove newlines
+  awk '{printf "%s", $0}'
+}
+
+chef_api_request() {
+  local method path body timestamp chef_server_url client_name hashed_body hashed_path
+  local canonical_request headers auth_headers
+  local chef_role_name chef_environment chef_organization
+
+  chef_role_name=$1
+  chef_environment=$2
+  chef_organization=$3
+
+  chef_server_url="https://my.chef.server/organizations/$chef_organization"
+  path="${chef_server_url}/search/node?q=role:$chef_role_name%20AND%20chef_environment:$chef_environment&start=0&rows=10"
+
+  endpoint=/organizations/$chef_organization/search/node
+
+  client_name="openfaas"
+  method="GET"
+  body=""
+
+  hashed_path=$(echo -n "$endpoint" | openssl dgst -sha1 -binary | openssl enc -base64)
+  hashed_body=$(echo -n "$body" | openssl dgst -sha1 -binary | openssl enc -base64)
+  timestamp=$(date -u "+%Y-%m-%dT%H:%M:%SZ")
+
+  canonical_request="Method:$method\nHashed Path:$hashed_path\nX-Ops-Content-Hash:$hashed_body\nX-Ops-Timestamp:$timestamp\nX-Ops-UserId:$client_name"
+  headers="-H X-Ops-Timestamp:$timestamp \
+    -H X-Ops-Userid:$client_name \
+    -H X-Chef-Version:0.10.4 \
+    -H Accept:application/json \
+    -H X-Ops-Content-Hash:$hashed_body \
+    -H X-Ops-Sign:version=1.0"
+
+  auth_headers=$(printf "$canonical_request" | openssl rsautl -sign -inkey \
+    "/tmp/${client_name}.pem" | openssl enc -base64 | _chomp |  awk '{ll=int(length()/60);i=0; \
+    while (i<=ll) {printf " -H X-Ops-Authorization-%s:%s", i+1, substr($0,i*60+1,60);i=i+1}}')
+
+  curl_command="curl -s -k $headers $auth_headers $path"
+  $curl_command | jq -r '.rows[].name'
+}
+
+if [[ $# -eq 0 ]]; then
+  usage
+else
+  chef_api_request "$@"
+fi
